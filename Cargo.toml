@@ -1,23 +1,22 @@
 [package]
 edition      = "2024"
 name         = "esp-mqtt-project"
-rust-version = "1.88"
+rust-version = "1.95"
 version      = "0.1.0"
 
 [[bin]]
-name = "esp-mqtt-project"
-path = "./src/bin/main.rs"
+name = "hello"
+path = "./src/bin/hello.rs"
+
+[[bin]]
+name = "mqtt-client"
+path = "./src/bin/mqtt_client.rs"
 
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
-
+esp-radio = { version = "0.18.0", features = ["esp32s3", "log-04"] }
 esp-rtos = { version = "0.3.0", features = ["embassy", "esp32s3", "log-04"] }
-
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
-log                    = "0.4.27"
-
-embassy-executor = { version = "0.10.0", features = ["log"] }
-embassy-time = { version = "0.5.0", features = ["log"] }
 esp-backtrace = { version = "0.19.0", features = [
   "esp32s3",
   "panic-handler",
@@ -25,9 +24,16 @@ esp-backtrace = { version = "0.19.0", features = [
 ] }
 esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
 
+embassy-executor = { version = "0.10.0", features = ["log"] }
+embassy-time = { version = "0.5.0", features = ["log"] }
+embassy-net = { version = "0.9.1", features = ["tcp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
+log = "0.4.27"
 
+# MQTT client (no_std, async, uses alloc for heap-backed buffers, log crate for logging)
+rust-mqtt = { version = "0.5.1", default-features = false, features = ["v5", "log", "log-level-info"] }
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
