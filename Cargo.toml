@@ -1,35 +1,68 @@
 [package]
-edition      = "2024"
-name         = "esp-mqtt-project"
+edition = "2024"
+name = "esp-mqtt-project"
 rust-version = "1.95"
-version      = "0.1.0"
+version = "0.1.0"
 
 [[bin]]
-name = "hello"
-path = "./src/bin/hello.rs"
+name = "hello-esp"
+path = "./src/bin/hello_esp.rs"
+required-features = ["esp"]
+
+[[bin]]
+name = "hello-qemu"
+path = "./src/bin/hello_qemu.rs"
+required-features = ["qemu"]
 
 [[bin]]
 name = "mqtt-client"
 path = "./src/bin/mqtt_client.rs"
+required-features = ["esp"]
+
+[features]
+esp = [
+ "dep:esp-hal",
+ "dep:esp-radio",
+ "dep:esp-rtos",
+ "dep:esp-bootloader-esp-idf",
+ "dep:esp-backtrace",
+ "dep:esp-println",
+]
+qemu = [
+ "dep:cortex-m",
+ "dep:cortex-m-rt",
+ "dep:cortex-m-semihosting",
+ "dep:critical-section",
+ "dep:panic-semihosting",
+ "dep:embassy-time-driver",
+ "embassy-executor/platform-cortex-m",
+ "embassy-executor/executor-thread",
+ "embassy-time/tick-hz-1_000",
+]
 
 [dependencies]
-esp-hal = { version = "~1.1.0", features = ["esp32s3", "log-04", "unstable"] }
-esp-radio = { version = "0.18.0", features = ["esp32s3", "log-04"] }
-esp-rtos = { version = "0.3.0", features = ["embassy", "esp32s3", "log-04"] }
-esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3", "log-04"] }
-esp-backtrace = { version = "0.19.0", features = [
-  "esp32s3",
-  "panic-handler",
-  "println",
-] }
-esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
+# --- ESP platform (enabled by the `esp` feature) ---
+esp-hal = { version = "~1.1.0", optional = true, features = ["esp32s3", "log-04", "unstable"] }
+esp-radio = { version = "0.18.0", optional = true, features = ["esp32s3", "log-04"] }
+esp-rtos = { version = "0.3.0", optional = true, features = ["embassy", "esp32s3", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.5.0", optional = true, features = ["esp32s3", "log-04"] }
+esp-backtrace = { version = "0.19.0", optional = true, features = ["esp32s3", "panic-handler", "println"] }
+esp-println = { version = "0.17.0", optional = true, features = ["esp32s3", "log-04"] }
 
+# --- QEMU / Cortex-M3 LM3S6965EVB (enabled by the `qemu` feature) ---
+cortex-m = { version = "0.7", optional = true, features = ["critical-section-single-core"] }
+cortex-m-rt = { version = "0.7", optional = true }
+cortex-m-semihosting = { version = "0.5", optional = true }
+embassy-time-driver = { version = "0.2", optional = true }
+panic-semihosting = { version = "0.6", optional = true }
+critical-section = { version = "1", optional = true }
+
+# --- Shared ---
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = { version = "0.5.0", features = ["log"] }
 embassy-net = { version = "0.9.1", features = ["tcp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
 
-critical-section = "1.2.0"
-static_cell      = "2.1.1"
+static_cell = "2.1.1"
 log = "0.4.27"
 
 # MQTT client (no_std, async, uses alloc for heap-backed buffers, log crate for logging)
@@ -42,7 +75,7 @@ rust-mqtt = { version = "0.5.1", default-features = false, features = ["v5", "lo
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1     # LLVM can perform better optimizations using a single thread
-debug         = 2     # prefer slower builds but better debugging experience
-lto           = 'fat'
-opt-level     = 's'
+codegen-units = 1 # LLVM can perform better optimizations using a single thread
+debug = 2 # prefer slower builds but better debugging experience
+lto = 'fat'
+opt-level = 's'

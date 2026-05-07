@@ -1,14 +1,33 @@
 [target.xtensa-esp32s3-none-elf]
 runner = "espflash flash --monitor --chip esp32s3"
-
-[env]
-ESP_LOG="info"
-
-[build]
 rustflags = [
   "-C", "link-arg=-nostartfiles",
 ]
 
+[target.thumbv7m-none-eabi]
+runner = "qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -semihosting-config enable=on,target=native -kernel"
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=--nmagic",
+]
+
+[env]
+ESP_LOG="info"
+
+[alias]
+
+# --- clippy ---
+clippy-esp  = "clippy --target xtensa-esp32s3-none-elf  --features esp"
+clippy-qemu   = "clippy --target thumbv7m-none-eabi  --features qemu"
+
+# --- hello ---
+run-hello-esp  = "run --bin hello-esp  --target xtensa-esp32s3-none-elf --features esp"
+run-hello-qemu = "run --bin hello-qemu --target thumbv7m-none-eabi      --features qemu"
+
+# --- mqtt-client ---
+run-mqtt-esp = "run --bin mqtt-client --target xtensa-esp32s3-none-elf --features esp"
+
+[build]
 target = "xtensa-esp32s3-none-elf"
 
 [unstable]
