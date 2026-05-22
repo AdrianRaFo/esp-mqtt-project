@@ -1,72 +1,46 @@
-#![no_std]
-#![cfg(feature = "esp")]
+extern crate alloc;
 
-use embassy_net_driver::Driver;
-use esp_radio::{
-    Radio,
-    wifi::{Configuration, Controller as WifiController},
-};
+use alloc::string::String;
+use embassy_time::{Duration, Timer};
+use esp_radio::wifi::{AuthenticationMethod, Ssid, WifiController, sta::StationConfig};
+use log::{error, info, warn};
 
-/// Drives the WiFi connection state machine.
-///
-/// Handles initial connect and automatic reconnect after a disconnect.
 #[embassy_executor::task]
-pub async fn wifi_task(mut controller: WifiController<'static>) {
+pub async fn wifi_task(mut controller: WifiController<'static>, ssid: Ssid, password: String) -> ! {
+    const MAX_BACKOFF: Duration = Duration::from_secs(15);
+    let mut backoff: Duration = Duration::from_secs(5);
+
+    let config = esp_radio::wifi::Config::Station(
+        StationConfig::default()
+            .with_ssid(ssid)
+            .with_auth_method(AuthenticationMethod::Wpa3Personal)
+            .with_password(password),
+    );
+
+    controller
+        .set_config(&config)
+        .expect("Failed to set WiFi config");
+
     loop {
-        // If already connected, block until disconnected.
-        if controller.is_connected() {
-            info!("Connected to '{}'", SSID);
-            controller.wait_for_disconnect().await;
-            warn!("Disconnected from WiFi");
-            Timer::after(Duration::from_millis(5_000)).await;
-        }
+        // Transition to Connecting state if we were in Disconnected or stuck here
+        if !controller.is_connected() {
+            info!("Attempting to connect to WiFi...");
 
-        // Start the radio if it hasn't been started yet.
-        let connected = match controller.is_connected() {
-            true => true,
-            false => {
-                info!("Starting WiFi radio...");
-                loop {
-                    let result = controller.start_async().await;
-                    if matches!(result, Ok(_)) {
-                        info!("WiFi radio started");
-                        break;
-                    }
-                    warn!("WiFi start failed: {:?}, retrying...", result);
-                    Timer::after(Duration::from_millis(5_000)).await;
-                }
-
-                // Configure client credentials.
-                let config = Configuration::Station {
-                    ssid: SSID.try_into().unwrap(),
-                    password: PASSWORD.try_into().unwrap(),
-                    ..Default::default()
-                };
-                controller.set_configuration(&config).ok();
-
-                info!("Connecting to '{}' ...", SSID);
-                match controller.connect_async().await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        warn!("WiFi connect failed: {:?}", e);
-                        Timer::after(Duration::from_millis(5_000)).await;
-                        false
-                    }
+            match controller.connect_async().await {
+                Ok(_) => info!("WiFi connected."),
+                Err(e) => {
+                    error!("Failed to connect WiFi: {:?}", e);
+                    Timer::after(backoff).await; // Wait before retrying starting/connecting
+                    backoff = (backoff * 2).min(MAX_BACKOFF); // Exponential backoff for start failures
+                    continue;
                 }
             }
-        };
+        }
 
-        // If we are connected, wait for disconnect and repeat.
-        if connected {
-            controller.wait_for_disconnect().await;
+        // Wait for the link to go down (disconnection event).
+        if controller.wait_for_disconnect_async().await.is_ok() {
             warn!("Disconnected from WiFi");
-            Timer::after(Duration::from_millis(5_000)).await;
+            backoff = Duration::from_secs(5); // Reset backoff on disconnect
         }
     }
-}
-
-/// Runs the embassy-net network stack (processes packets, drives DHCP, etc.).
-#[embassy_executor::task]
-pub async fn net_task(runner: embassy_net::Runner<'static, WifiDevice<'static, WifiStaDevice>>) {
-    runner.run().await
 }
