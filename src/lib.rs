@@ -2,9 +2,14 @@
 
 pub mod esp;
 
+use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Timer};
 use log::{error, info, warn};
+use rust_mqtt::client::client::MqttClient;
+use rust_mqtt::client::client_config::{ClientConfig, MqttVersion};
+use rust_mqtt::packet::v5::reason_codes::ReasonCode;
+use rust_mqtt::utils::rng_generator::CountingRng;
 
 #[embassy_executor::task]
 pub async fn hello_run() -> ! {
@@ -26,8 +31,8 @@ pub struct MqttConfig {
 /// Connects to the MQTT broker, subscribes to [`MQTT_TOPIC`], and prints
 /// every received event.  Reconnects automatically on any error.
 #[embassy_executor::task]
-pub async fn mqtt_run(stack: Stack<'static>, config: MqttConfig) -> ! {
-    // TCP socket I/O buffers – sized to fit the largest expected MQTT packet.
+pub async fn mqtt_run(stack: Stack<'static>, mqtt_config: MqttConfig) -> ! {
+    // TCP socket I/O buffers - sized to fit the largest expected MQTT packet.
     let mut rx_buffer = [0u8; 4_096];
     let mut tx_buffer = [0u8; 4_096];
 
@@ -37,12 +42,12 @@ pub async fn mqtt_run(stack: Stack<'static>, config: MqttConfig) -> ! {
 
     let broker_endpoint = IpEndpoint::new(
         IpAddress::v4(
-            config.broker_ip[0],
-            config.broker_ip[1],
-            config.broker_ip[2],
-            config.broker_ip[3],
+            mqtt_config.broker_ip[0],
+            mqtt_config.broker_ip[1],
+            mqtt_config.broker_ip[2],
+            mqtt_config.broker_ip[3],
         ),
-        config.port,
+        mqtt_config.port,
     );
 
     loop {
@@ -54,7 +59,7 @@ pub async fn mqtt_run(stack: Stack<'static>, config: MqttConfig) -> ! {
 
         info!(
             "Connecting TCP to {:?}:{}...",
-            config.broker_ip, config.port
+            mqtt_config.broker_ip, mqtt_config.port
         );
         if let Err(e) = socket.connect(broker_endpoint).await {
             error!("TCP connect failed: {:?}", e);
@@ -68,7 +73,7 @@ pub async fn mqtt_run(stack: Stack<'static>, config: MqttConfig) -> ! {
         // ----------------------------------------------------------------
         let mut config: ClientConfig<'_, 5, CountingRng> =
             ClientConfig::new(MqttVersion::MQTTv5, CountingRng(20_000));
-        config.add_client_id(client_id);
+        config.add_client_id(mqtt_config.client_id);
         config.add_max_subscribe_qos(rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0);
         config.max_packet_size = 512;
 
@@ -101,8 +106,8 @@ pub async fn mqtt_run(stack: Stack<'static>, config: MqttConfig) -> ! {
         // ----------------------------------------------------------------
         // 4. Subscribe to the configured topic.
         // ----------------------------------------------------------------
-        match client.subscribe_to_topic(config.topic).await {
-            Ok(_) => info!("Subscribed to '{}'", config.topic),
+        match client.subscribe_to_topic(mqtt_config.topic).await {
+            Ok(_) => info!("Subscribed to '{}'", mqtt_config.topic),
             Err(e) => {
                 error!("SUBSCRIBE failed: {:?}", e);
                 continue;
@@ -110,7 +115,7 @@ pub async fn mqtt_run(stack: Stack<'static>, config: MqttConfig) -> ! {
         }
 
         // ----------------------------------------------------------------
-        // 5. Event loop – receive and print incoming messages.
+        // 5. Event loop - receive and print incoming messages.
         // ----------------------------------------------------------------
         info!("Listening for MQTT messages...");
         loop {
