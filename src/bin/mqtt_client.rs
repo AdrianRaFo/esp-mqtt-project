@@ -31,23 +31,19 @@ extern crate esp_backtrace;
 extern crate alloc;
 
 use alloc::borrow::ToOwned;
+use alloc::string::String;
 use embassy_executor::Spawner;
+use embassy_net::StackResources;
 use embassy_net::driver::Driver;
-use embassy_net::{IpAddress, IpEndpoint, Stack, StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
-use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{clock::CpuClock, interrupt::software::SoftwareInterruptControl};
-use esp_mqtt_project::esp;
+use esp_mqtt_project::mqtt_run;
+use esp_mqtt_project::{MqttConfig, esp};
 use esp_radio::wifi::Ssid;
-use log::{error, info, warn};
-use rust_mqtt::{
-    client::client::MqttClient,
-    client::client_config::{ClientConfig, MqttVersion},
-    packet::v5::reason_codes::ReasonCode,
-    utils::rng_generator::CountingRng,
-};
+use log::{info, warn};
+
 use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -81,11 +77,11 @@ const MQTT_PORT: u16 = env!("MQTT_PORT")
     .parse()
     .expect("MQTT_PORT must be a valid integer");
 
-/// MQTT client identifier – must be unique per broker session.
-const MQTT_CLIENT_ID: &str = env!("MQTT_CLIENT_ID");
-
 /// Topic to subscribe to.  MQTT wildcards ('+', '#') are allowed.
 const MQTT_TOPIC: &str = env!("MQTT_TOPIC");
+
+/// MQTT client identifier – must be unique per broker session.
+const MQTT_CLIENT_ID: &str = env!("MQTT_CLIENT_ID");
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -115,14 +111,15 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialise the WiFi radio using esp-radio 0.18.
 
-    let (mut wifi_controller, interfaces) =
-        esp_radio::wifi::new(peripherals.WIFI, Default::default())
-            .expect("Failed to initialize Wi-Fi controller");
+    let (wifi_controller, interfaces) = esp_radio::wifi::new(peripherals.WIFI, Default::default())
+        .expect("Failed to initialize Wi-Fi controller");
+
+    let net_driver = TODO();
 
     // Build the embassy-net stack with DHCP.
     let net_config = embassy_net::Config::dhcpv4(Default::default());
     let (stack, runner) = embassy_net::new(
-        net_device,
+        net_driver,
         net_config,
         STACK_RESOURCES.init(StackResources::new()),
         /* random_seed */ 0xDEAD_BEEF_CAFE_BABEu64,
@@ -150,6 +147,13 @@ async fn main(spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(500)).await;
     }
 
+    let mqtt_config = MqttConfig {
+        broker: MQTT_BROKER,
+        port: MQTT_PORT,
+        topic: MQTT_TOPIC,
+        client_id: MQTT_CLIENT_ID,
+    };
+
     // Run the MQTT loop indefinitely (never returns under normal operation).
-    mqtt_loop(stack).await
+    spawner.spawn(mqtt_run(stack, mqtt_config).expect("failed to spawn mqtt task"))
 }
