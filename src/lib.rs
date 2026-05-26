@@ -3,12 +3,13 @@
 pub mod esp;
 
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{IpAddress, IpEndpoint, Stack};
+use embassy_net::{IpAddress, Stack};
 use embassy_time::{Duration, Timer};
-use log::{error, info};
+use log::{error, info, warn};
+use minimq::{Buffers, ConfigBuilder, ConnectEvent, Session, TopicFilter};
 
 #[embassy_executor::task]
-pub async fn hello_run() -> ! {
+pub async fn hello_task() -> ! {
     info!("Embassy initialized!");
 
     loop {
@@ -18,7 +19,7 @@ pub async fn hello_run() -> ! {
 }
 
 pub struct MqttConfig {
-    pub broker: &'static str,
+    pub broker: IpAddress,
     pub port: u16,
     pub topic: &'static str,
     pub client_id: &'static str,
@@ -27,100 +28,96 @@ pub struct MqttConfig {
 /// Connects to the MQTT broker, subscribes to [`MQTT_TOPIC`], and prints
 /// every received event.  Reconnects automatically on any error.
 #[embassy_executor::task]
-pub async fn mqtt_run(stack: Stack<'static>, mqtt_config: MqttConfig) -> ! {
-    // TCP socket I/O buffers - sized to fit the largest expected MQTT packet.
-    let mut rx_buffer = [0u8; 4_096];
-    let mut tx_buffer = [0u8; 4_096];
-
-    // Scratch buffers used by the MqttClient internally.
-    let mut mqtt_recv_buf = [0u8; 512];
-    let mut mqtt_send_buf = [0u8; 512];
-
-    // TODO get ip address from broker
-    let broker_ip: [u8; 4] = [192, 168, 1, 2];
-
-    let broker_endpoint = IpEndpoint::new(
-        IpAddress::v4(broker_ip[0], broker_ip[1], broker_ip[2], broker_ip[3]),
-        mqtt_config.port,
-    );
+pub async fn mqtt_task(stack: Stack<'static>, mqtt_config: MqttConfig) -> ! {
+    // ----------------------------
+    // static buffers (required)
+    // ----------------------------
+    let mut tcp_rx: [u8; 4096] = [0; 4096];
+    let mut tcp_tx: [u8; 4096] = [0; 4096];
 
     loop {
-        // ----------------------------------------------------------------
-        // 1. Open a TCP connection to the broker.
-        // ----------------------------------------------------------------
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(30)));
+        let mut mqtt_rx: [u8; 4096] = [0; 4096];
+        let mut mqtt_tx: [u8; 4096] = [0; 4096];
 
-        info!(
-            "Connecting TCP to {:?}:{}...",
-            mqtt_config.broker, mqtt_config.port
-        );
-        if let Err(e) = socket.connect(broker_endpoint).await {
-            error!("TCP connect failed: {:?}", e);
-            Timer::after(Duration::from_secs(5)).await;
-            continue; // socket is dropped here, buffers become available again
-        }
-        info!("TCP connection established");
+        let buffers = Buffers::new(&mut mqtt_rx, &mut mqtt_tx);
 
-        // ----------------------------------------------------------------
-        // 2. Build the MQTT client configuration.
-        // ----------------------------------------------------------------
-        let mut config: ClientConfig<'_, 5, CountingRng> =
-            ClientConfig::new(MqttVersion::MQTTv5, CountingRng(20_000));
-        config.add_client_id(mqtt_config.client_id);
-        config.add_max_subscribe_qos(QualityOfService::QoS0);
-        config.max_packet_size = 512;
+        let config = ConfigBuilder::new(buffers)
+            .client_id(mqtt_config.client_id)
+            .unwrap();
+        let mut session = Session::new(config);
 
-        // ----------------------------------------------------------------
-        // 3. Create the MQTT client and perform the CONNECT handshake.
-        // ----------------------------------------------------------------
-        let mut client = MqttClient::<_, 5, _>::new(
-            socket,
-            &mut mqtt_send_buf,
-            512,
-            &mut mqtt_recv_buf,
-            512,
-            config,
-        );
+        // ----------------------------
+        // TCP connection
+        // ----------------------------
 
-        match client.connect_to_broker().await {
-            Ok(_) => info!("MQTT CONNECT accepted by broker"),
-            Err(code) => {
-                error!("MQTT CONNECT rejected, reason code: {:?}", code);
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
-            }
+        let mut socket = TcpSocket::new(stack, &mut tcp_rx, &mut tcp_tx);
+
+        if let Err(e) = socket.connect((mqtt_config.broker, mqtt_config.port)).await {
+            warn!("TCP connect failed: {:?}", e);
+            Timer::after(Duration::from_secs(2)).await;
+            continue;
         }
 
-        // ----------------------------------------------------------------
-        // 4. Subscribe to the configured topic.
-        // ----------------------------------------------------------------
-        match client.subscribe_to_topic(mqtt_config.topic).await {
-            Ok(_) => info!("Subscribed to '{}'", mqtt_config.topic),
+        info!("TCP connected");
+
+        // ----------------------------
+        // MQTT CONNECT
+        // ----------------------------
+        let conn = match session.connect(socket).await {
+            Ok(c) => c,
             Err(e) => {
-                error!("SUBSCRIBE failed: {:?}", e);
+                error!("MQTT connect failed: {:?}", e);
+                Timer::after(Duration::from_secs(2)).await;
                 continue;
+            }
+        };
+
+        match conn {
+            ConnectEvent::Connected => {
+                info!("fresh session");
+            }
+            ConnectEvent::Reconnected => {
+                info!("session resumed");
             }
         }
 
-        // ----------------------------------------------------------------
-        // 5. Event loop - receive and print incoming messages.
-        // ----------------------------------------------------------------
-        info!("Listening for MQTT messages...");
+        // ----------------------------
+        // SUBSCRIBE
+        // ----------------------------
+        if let Err(e) = session
+            .subscribe(&[TopicFilter::new("sensors/temp")], &[])
+            .await
+        {
+            error!("subscribe failed: {:?}", e);
+            continue;
+        }
+
+        info!("subscribed");
+
+        // ----------------------------
+        // CONSUMER LOOP
+        // ----------------------------
         loop {
-            match client.receive_message().await {
-                Ok((topic, payload)) => {
-                    let text = core::str::from_utf8(payload).unwrap_or("<binary payload>");
-                    info!("[{}] {}", topic, text);
+            match session.recv().await {
+                Ok(msg) => {
+                    info!("topic={} payload={:?}", msg.topic(), msg.payload());
                 }
-                Err(code) => {
-                    error!("MQTT receive error, reason code: {:?}", code);
+
+                Err(minimq::Error::Disconnected) => {
+                    warn!("mqtt disconnected");
+                    break;
+                }
+
+                Err(e) => {
+                    error!("mqtt error: {:?}", e);
                     break;
                 }
             }
+
+            // keep session alive (important in minimq)
+            let _ = session.poll().await;
         }
 
-        // Brief pause before the next connection attempt.
-        Timer::after(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(1)).await;
     }
 }

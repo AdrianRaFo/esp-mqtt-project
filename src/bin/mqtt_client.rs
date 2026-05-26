@@ -25,24 +25,21 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-// Provides the `#[panic_handler]` for ESP builds.
-extern crate esp_backtrace;
-
 extern crate alloc;
 
 use alloc::borrow::ToOwned;
-use alloc::string::String;
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
-use embassy_net::driver::Driver;
-use embassy_time::{Duration, Timer};
+
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{clock::CpuClock, interrupt::software::SoftwareInterruptControl};
-use esp_mqtt_project::mqtt_run;
+use esp_mqtt_project::mqtt_task;
 use esp_mqtt_project::{MqttConfig, esp};
-use esp_radio::wifi::Ssid;
-use log::{info, warn};
+use esp_radio::wifi::AuthenticationMethod;
+use esp_radio::wifi::ControllerConfig;
+use esp_radio::wifi::sta::StationConfig;
+use log::info;
 
 use static_cell::StaticCell;
 
@@ -52,10 +49,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 // Static storage required by embassy-net and esp-wifi
 // ---------------------------------------------------------------------------
 
-/// Heap for dynamic allocations (needed by rust-mqtt's AllocBuffer and other
-/// crates that use `alloc`).
-esp_alloc::heap_allocator!(size: 72 * 1024);
-
 /// Socket resources for the embassy-net stack (3 concurrent sockets).
 static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 
@@ -64,18 +57,16 @@ static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 // ---------------------------------------------------------------------------
 
 /// WiFi SSID, read from the WIFI_SSID environment variable at compile time.
-const SSID: Ssid = Ssid::from(env!("WIFI_SSID"));
+const SSID: &str = env!("WIFI_SSID");
 
 /// WiFi password, read from the WIFI_PASSWORD environment variable at compile time.
-const PASSWORD: String = env!("WIFI_PASSWORD").to_owned();
+const PASSWORD: &str = env!("WIFI_PASSWORD");
 
 /// MQTT broker address.
-const MQTT_BROKER: &str = env!("MQTT_BROKER");
+const MQTT_BROKER_IP: &str = env!("MQTT_BROKER_IP");
 
 /// MQTT broker port (1883 = plain TCP, 8883 = TLS).
-const MQTT_PORT: u16 = env!("MQTT_PORT")
-    .parse()
-    .expect("MQTT_PORT must be a valid integer");
+const MQTT_PORT: &str = env!("MQTT_PORT");
 
 /// Topic to subscribe to.  MQTT wildcards ('+', '#') are allowed.
 const MQTT_TOPIC: &str = env!("MQTT_TOPIC");
@@ -92,14 +83,13 @@ const MQTT_CLIENT_ID: &str = env!("MQTT_CLIENT_ID");
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
 #[esp_rtos::main]
-async fn main(spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) {
+    // Initialise esp-hal.
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
     esp_println::logger::init_logger_from_env();
 
-    // Initialise esp-hal.
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 73744);
 
     // TIMG0 drives the esp-rtos / embassy time-driver.
 
@@ -111,49 +101,46 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialise the WiFi radio using esp-radio 0.18.
 
-    let (wifi_controller, interfaces) = esp_radio::wifi::new(peripherals.WIFI, Default::default())
-        .expect("Failed to initialize Wi-Fi controller");
-
-    let net_driver = TODO();
-
-    // Build the embassy-net stack with DHCP.
-    let net_config = embassy_net::Config::dhcpv4(Default::default());
-    let (stack, runner) = embassy_net::new(
-        net_driver,
-        net_config,
-        STACK_RESOURCES.init(StackResources::new()),
-        /* random_seed */ 0xDEAD_BEEF_CAFE_BABEu64,
+    let wifi_config = esp_radio::wifi::Config::Station(
+        StationConfig::default()
+            .with_ssid(SSID)
+            .with_auth_method(AuthenticationMethod::Wpa3Personal)
+            .with_password(PASSWORD.to_owned()),
     );
 
-    spawner
-        .spawn(esp::wifi_task(wifi_controller, SSID, PASSWORD).expect("failed to spawn wifi task"));
+    let (wifi_controller, interfaces) = esp_radio::wifi::new(
+        peripherals.WIFI,
+        ControllerConfig::default().with_initial_config(wifi_config),
+    )
+    .expect("Failed to initialize Wi-Fi controller");
 
-    // Wait until the network link is up.
-    info!("Waiting for WiFi link...");
-    loop {
-        if stack.is_link_up() {
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
+    let net_config = embassy_net::Config::dhcpv4(Default::default());
 
-    // Wait for a DHCP-assigned address.
-    info!("Waiting for IP address (DHCP)...");
-    loop {
-        if let Some(cfg) = stack.config_v4() {
-            info!("IP address: {}", cfg.address);
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
+    spawner.spawn(esp::wifi_task(wifi_controller).expect("failed to spawn wifi task"));
+
+    // Build the embassy-net stack with DHCP.
+    let (stack, runner) = embassy_net::new(
+        interfaces.station,
+        net_config,
+        STACK_RESOURCES.init(StackResources::new()),
+        0xDEAD_BEEF_CAFE_BABEu64,
+    );
+
+    spawner.spawn(esp::net_task(runner).expect("failed to spawn mqtt task"));
+
+    stack.wait_config_up().await;
 
     let mqtt_config = MqttConfig {
-        broker: MQTT_BROKER,
-        port: MQTT_PORT,
+        broker: MQTT_BROKER_IP
+            .parse()
+            .expect("MQTT_BROKER must be a valid IP address"),
+        port: MQTT_PORT
+            .parse()
+            .expect("MQTT_PORT must be a valid integer"),
         topic: MQTT_TOPIC,
         client_id: MQTT_CLIENT_ID,
     };
 
     // Run the MQTT loop indefinitely (never returns under normal operation).
-    spawner.spawn(mqtt_run(stack, mqtt_config).expect("failed to spawn mqtt task"))
+    spawner.spawn(mqtt_task(stack, mqtt_config).expect("failed to spawn mqtt task"))
 }

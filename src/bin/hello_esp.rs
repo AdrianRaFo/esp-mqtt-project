@@ -13,7 +13,7 @@ extern crate esp_backtrace;
 use esp_hal::Config;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
-use esp_mqtt_project::hello_run;
+use esp_mqtt_project::hello_task;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -35,7 +35,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    spawner.spawn(hello_run().expect("failed to spawn run task"));
+    spawner.spawn(hello_task().expect("failed to spawn run task"));
 
     core::future::pending::<()>().await;
     unreachable!()

@@ -6,7 +6,7 @@ use core::task::Waker;
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::exception;
 use embassy_time_driver::Driver;
-use esp_mqtt_project::hello_run;
+use esp_mqtt_project::hello_task;
 
 // ---------------------------------------------------------------------------
 // SysTick-based Embassy time driver
@@ -113,7 +113,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     core.SYST.enable_counter();
     core.SYST.enable_interrupt();
 
-    spawner.spawn(hello_run().expect("failed to spawn run task"));
+    spawner.spawn(hello_task().expect("failed to spawn run task"));
 
     core::future::pending::<()>().await;
     unreachable!()

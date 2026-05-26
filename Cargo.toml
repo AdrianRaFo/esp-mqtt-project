@@ -77,8 +77,8 @@ embassy-net = { version = "0.9.1", features = ["tcp", "dhcpv4", "log", "medium-e
 static_cell = "2.1.1"
 log = "0.4.27"
 
-# MQTT client (no_std, async, uses alloc for heap-backed buffers, log crate for logging)
-rust-mqtt = { version = "0.5.1", default-features = false, features = ["v5", "log", "log-level-info"] }
+# MQTT client
+minimq = { version = "0.12.0", default-features = false }
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
